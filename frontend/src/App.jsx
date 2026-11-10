@@ -25,9 +25,14 @@ export default function App() {
       <MonitoringProvider>
         <Routes>
           <Route path="/showcase" element={<PortfolioShowcase />} />
-          {isShowcaseHome && <Route path="/landing" element={<PortfolioShowcase />} />}
+          {isShowcaseHome && (
+            <>
+              <Route path="/" element={<PortfolioShowcase />} />
+              <Route path="/landing" element={<PortfolioShowcase />} />
+            </>
+          )}
           <Route element={<AppLayout />}>
-            <Route path="/" element={isShowcaseHome ? <PortfolioShowcase /> : <Dashboard />} />
+            {!isShowcaseHome && <Route path="/" element={<Dashboard />} />}
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/cpu" element={<CPU />} />
             <Route path="/memory" element={<Memory />} />

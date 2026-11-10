@@ -1,8 +1,10 @@
 import { NavLink } from "react-router-dom";
 import Icon from "./Icons";
 
+const dashboardPath = import.meta.env.VITE_LANDING_PAGE === "showcase" ? "/dashboard" : "/";
+
 const navigation = [
-  { label: "Dashboard", to: "/", icon: "dashboard", end: true },
+  { label: "Dashboard", to: dashboardPath, icon: "dashboard", end: true },
   { label: "CPU", to: "/cpu", icon: "cpu" },
   { label: "Memory", to: "/memory", icon: "memory" },
   { label: "Disk", to: "/disk", icon: "disk" },
@@ -23,7 +25,7 @@ export default function Sidebar({ open, onNavigate }) {
     <>
       {open && <button className="sidebar-backdrop" onClick={onNavigate} aria-label="Close navigation" />}
       <aside className={`sidebar ${open ? "sidebar-open" : ""}`}>
-        <NavLink className="brand" to="/" onClick={onNavigate}>
+        <NavLink className="brand" to={dashboardPath} onClick={onNavigate}>
           <span className="brand-mark" aria-hidden="true">
             <span />
             <span />

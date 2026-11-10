@@ -48,7 +48,7 @@ export default function FeaturesSection() {
             </div>
 
             <h3 className="feature-card-title">{f.title}</h3>
-            <p className="feature-card-desc">{f.description}</p>
+            <p className="feature-card-desc">{f.desc}</p>
 
             <div className="feature-card-details">
               <strong>Technical Implementation:</strong>

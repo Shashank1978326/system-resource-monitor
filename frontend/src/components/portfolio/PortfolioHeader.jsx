@@ -61,7 +61,7 @@ export default function PortfolioHeader() {
             <span>GitHub</span>
           </a>
 
-          <Link to="/" className="portfolio-btn portfolio-btn-primary">
+          <Link to="/dashboard" className="portfolio-btn portfolio-btn-primary">
             <Icon name="dashboard" size={16} />
             <span>Live Dashboard</span>
           </Link>

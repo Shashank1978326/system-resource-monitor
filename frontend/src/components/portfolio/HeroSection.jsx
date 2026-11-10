@@ -30,7 +30,7 @@ export default function HeroSection() {
         </p>
 
         <div className="portfolio-hero-cta-group">
-          <Link to="/" className="portfolio-btn portfolio-btn-lg portfolio-btn-primary">
+          <Link to="/dashboard" className="portfolio-btn portfolio-btn-lg portfolio-btn-primary">
             <Icon name="dashboard" size={18} />
             <span>{hero.primaryCta.label}</span>
           </Link>
@@ -60,7 +60,7 @@ export default function HeroSection() {
             <div key={i} className="portfolio-metric-card">
               <span className="metric-val">{b.value}</span>
               <span className="metric-lbl">{b.label}</span>
-              <span className="metric-desc">{b.subtext}</span>
+              <span className="metric-desc">{b.detail}</span>
             </div>
           ))}
         </div>

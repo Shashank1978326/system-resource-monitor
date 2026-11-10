@@ -5,6 +5,13 @@ import { portfolioData } from "../../data/portfolioData";
 export default function PortfolioFooter() {
   const { meta } = portfolioData;
 
+  const scrollTo = (id) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth" });
+    }
+  };
+
   const scrollToTop = () => {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -43,12 +50,12 @@ export default function PortfolioFooter() {
           <div className="footer-links-col">
             <h4 className="footer-heading">Navigation</h4>
             <ul className="footer-links">
-              <li><Link to="/">Live Dashboard</Link></li>
-              <li><a href="#about">About Project</a></li>
-              <li><a href="#features">13 Core Features</a></li>
-              <li><a href="#architecture">Architecture</a></li>
-              <li><a href="#tech-stack">Tech Stack</a></li>
-              <li><a href="#benchmarks">Benchmarks & Security</a></li>
+              <li><Link to="/dashboard">Live Dashboard</Link></li>
+              <li><a href="#about" onClick={(e) => { e.preventDefault(); scrollTo("about"); }}>About Project</a></li>
+              <li><a href="#features" onClick={(e) => { e.preventDefault(); scrollTo("features"); }}>13 Core Features</a></li>
+              <li><a href="#architecture" onClick={(e) => { e.preventDefault(); scrollTo("architecture"); }}>Architecture</a></li>
+              <li><a href="#tech-stack" onClick={(e) => { e.preventDefault(); scrollTo("tech-stack"); }}>Tech Stack</a></li>
+              <li><a href="#benchmarks" onClick={(e) => { e.preventDefault(); scrollTo("benchmarks"); }}>Benchmarks & Security</a></li>
             </ul>
           </div>
 
