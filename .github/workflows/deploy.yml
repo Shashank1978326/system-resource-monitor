@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
@@ -17,37 +17,43 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: "npm"
+          cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install dependencies
-        run: |
-          cd frontend
-          npm ci
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
 
-      - name: Build frontend
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend showcase
         env:
           VITE_LANDING_PAGE: showcase
+          VITE_BASE_PATH: /system-resource-monitor/
+        run: npm run build
+
+      - name: Prepare Pages fallback and .nojekyll
         run: |
-          cd frontend
-          npm run build
+          touch dist/.nojekyll
           cp dist/index.html dist/404.html
 
-      - name: Deploy to gh-pages branch (Dual Support)
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: frontend/dist
+      - name: Verify build output
+        run: |
+          test -f dist/index.html
+          ls -la dist dist/assets
 
-      - name: Upload artifact for GitHub Actions Pages
+      - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: frontend/dist
@@ -61,5 +67,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        continue-on-error: true
         uses: actions/deploy-pages@v4

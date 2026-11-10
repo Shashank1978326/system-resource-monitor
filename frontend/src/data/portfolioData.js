@@ -18,7 +18,7 @@ export const portfolioData = {
     githubUsername: "Shashank1978326",
     githubRepoUrl: "https://github.com/Shashank1978326/system-resource-monitor",
     githubProfileUrl: "https://github.com/Shashank1978326",
-    liveDashboardPath: "/",
+    liveDashboardPath: "/dashboard",
     docsAnchor: "#documentation",
   },
 
@@ -27,7 +27,7 @@ export const portfolioData = {
     headline: "Real-Time Hardware Telemetry, Statistical Anomaly Detection & ML Forecasting",
     description:
       "A complete full-stack diagnostic platform engineered to capture genuine system telemetry, store indexed timeseries in SQLite WAL mode, compute statistical deviations with z-score analysis, project future resource usage via linear regression, and compile boardroom-grade PDF diagnostic reports.",
-    primaryCta: { label: "Explore Live Dashboard", path: "/" },
+    primaryCta: { label: "Explore Live Dashboard", path: "/dashboard" },
     secondaryCta: { label: "View on GitHub", url: "https://github.com/Shashank1978326/system-resource-monitor" },
     tertiaryCta: { label: "System Architecture", anchor: "#architecture" },
   },
