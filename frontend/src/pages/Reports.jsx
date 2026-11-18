@@ -209,7 +209,8 @@ export default function Reports() {
 
       // Extract filename from response headers
       const disposition = response.headers["content-disposition"] || "";
-      let filename = `system_resource_report_${selectedPeriod}_${selectedType}.pdf`;
+      const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+      let filename = `system_resource_report_${selectedPeriod}_${selectedType}_${stamp}.pdf`;
       const match = disposition.match(/filename=["']?([^"';]+)["']?/i);
       if (match && match[1]) {
         filename = match[1];

@@ -141,7 +141,7 @@ export default function HistoricalChart({
                           ? `${(value / 1024 ** 2).toFixed(2)}`
                         : ""
                   )}
-                  width={48}
+                  width={60}
                 />
                 <Tooltip content={<GraphTooltip unit={group.unit} />} />
                 {group.series.map((series) => (

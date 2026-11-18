@@ -80,6 +80,38 @@ class BatteryResponse(BaseModel):
     message: str
 
 
+class GpuSummaryItem(BaseModel):
+    """Normalized hardware summary item for multi-GPU detection and dashboard display."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    name: str
+    vendor: str
+    type: str = "Unknown"
+    activity_status: str = "Unavailable"
+    utilization_percent: float | None = None
+    memory_used_mb: float | None = None
+    memory_total_mb: float | None = None
+    shared_memory_used_mb: float | None = None
+    shared_memory_total_mb: float | None = None
+    temperature_c: float | None = None
+    clock_speed_mhz: float | None = None
+    power_usage_w: float | None = None
+    driver_version: str | None = None
+    monitoring_method: str | None = None
+    status: str | None = None
+    available: bool = True
+
+
+class GpuListResponse(BaseModel):
+    """List of all detected GPUs with structured hardware metrics."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    gpus: list[GpuSummaryItem]
+
+
 class GpuDeviceInfoResponse(BaseModel):
     """Public hardware identity and optional monitoring capability."""
 
@@ -91,6 +123,9 @@ class GpuDeviceInfoResponse(BaseModel):
     total_memory_bytes: int | None = None
     driver_version: str | None = None
     monitoring_supported: bool = False
+    vendor: str | None = None
+    gpu_type: str | None = None
+    shared_memory_bytes: int | None = None
 
 
 class GpuInfoResponse(BaseModel):
@@ -113,6 +148,7 @@ class GpuInfoResponse(BaseModel):
         "detection_error",
     ]
     message: str | None
+    gpus: list[GpuSummaryItem] | None = None
 
 
 class GpuUsageDeviceResponse(BaseModel):
@@ -123,17 +159,26 @@ class GpuUsageDeviceResponse(BaseModel):
     device_index: int
     name: str | None
     manufacturer: str | None = None
+    vendor: str | None = None
+    gpu_type: str | None = None
     available: bool
     status: Literal["available", "partial", "device_error", "unsupported"]
+    activity_status: str | None = None
     monitoring_supported: bool = True
     gpu_utilization_percent: float | None
     temperature_celsius: float | None = None
+    clock_speed_mhz: float | None = None
     power_usage_watts: float | None = None
     power_limit_watts: float | None = None
     memory_used_mb: float | None
     memory_free_mb: float | None
     memory_total_mb: float | None
     memory_utilization_percent: float | None
+    shared_memory_used_mb: float | None = None
+    shared_memory_free_mb: float | None = None
+    shared_memory_total_mb: float | None = None
+    monitoring_method: str | None = None
+    driver_version: str | None = None
 
 
 class GpuUsageResponse(BaseModel):
@@ -155,6 +200,7 @@ class GpuUsageResponse(BaseModel):
     ]
     devices: list[GpuUsageDeviceResponse]
     message: str | None
+    gpus: list[GpuSummaryItem] | None = None
 
 
 class CpuResponse(BaseModel):

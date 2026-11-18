@@ -97,7 +97,7 @@ Understanding the deployment boundary is key for operating systems diagnostics:
 | Feature / Capability | Local Workstation Execution | Cloud Hosting (Vercel / Netlify / Pages) |
 | :--- | :--- | :--- |
 | **Hardware Telemetry** (CPU, RAM, GPU, Fans) | **Full Access** (psutil & NVML query actual machine) | N/A (Serverless sandbox cannot read local PC) |
-| **WebSocket Streaming** | **Live 1.0s Feed** (`ws://127.0.0.1:8000/ws`) | Disconnected / Mock Telemetry |
+| **WebSocket Streaming** | **Live 1.0s Feed** (`ws://127.0.0.1:8000/ws/monitoring`) | Disconnected / Mock Telemetry |
 | **PDF Report Generation** | **Direct Download** via ReportLab 4.x | Available if backend deployed to container |
 | **Showcase Website & Docs** | **Available** (`http://localhost:5173/showcase`) | **Ideal for Cloud** (Showcase portfolio for recruiters/professors) |
 

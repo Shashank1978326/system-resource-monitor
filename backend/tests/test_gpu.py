@@ -736,3 +736,96 @@ def test_gpu_usage_endpoint_uses_response_schema(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == expected.model_dump()
+
+
+def test_gpu_type_distinguishes_integrated_and_dedicated():
+    assert gpu_service._gpu_type("Intel", "Intel(R) UHD Graphics") == "Integrated"
+    assert gpu_service._gpu_type("Intel", "Intel Iris Xe") == "Integrated"
+    assert gpu_service._gpu_type("Intel", "Intel Arc A770") == "Dedicated"
+    assert gpu_service._gpu_type("NVIDIA", "NVIDIA GeForce RTX 2050") == "Dedicated"
+    assert gpu_service._gpu_type("AMD", "AMD Radeon RX 6700 XT") == "Dedicated"
+    assert gpu_service._gpu_type("AMD", "AMD Radeon(TM) Graphics") == "Integrated"
+
+
+def test_activity_status_distinguishes_workload_and_idle():
+    assert gpu_service._activity_status(0.0, available=True) == "Idle"
+    assert gpu_service._activity_status(0.5, available=True) == "Idle"
+    assert gpu_service._activity_status(1.0, available=True) == "Active"
+    assert gpu_service._activity_status(42.5, available=True) == "Active"
+    assert gpu_service._activity_status(None, available=True) == "Idle"
+    assert gpu_service._activity_status(None, available=False) == "Unavailable"
+
+
+def test_simultaneous_multi_gpu_monitoring_displays_all_detected_gpus(monkeypatch):
+    intel_gpu = GpuDeviceInfoResponse(
+        device_index=0,
+        manufacturer="Intel",
+        model="Intel(R) UHD Graphics",
+        vendor="Intel",
+        gpu_type="Integrated",
+        monitoring_supported=True,
+    )
+    nvidia_gpu = GpuDeviceInfoResponse(
+        device_index=1,
+        manufacturer="NVIDIA",
+        model="NVIDIA GeForce RTX 2050",
+        vendor="NVIDIA",
+        gpu_type="Dedicated",
+        total_memory_bytes=4 * 1024**3,
+        driver_version="555.42",
+        monitoring_supported=True,
+    )
+    monkeypatch.setattr(
+        gpu_service,
+        "_detect_system_gpus",
+        lambda: ([intel_gpu, nvidia_gpu], True),
+    )
+    gpu_service.reset_gpu_usage_cache()
+
+    info = gpu_service.get_gpu_info()
+    assert info.supported_gpu_detected is True
+    assert len(info.devices) == 2
+    assert {device.model for device in info.devices} == {
+        "Intel(R) UHD Graphics",
+        "NVIDIA GeForce RTX 2050",
+    }
+    assert info.gpus is not None
+    assert len(info.gpus) == 2
+
+    usage = gpu_service.get_gpu_usage()
+    assert usage.monitoring_available is True
+    assert len(usage.devices) == 2
+    assert {device.gpu_type for device in usage.devices} == {"Integrated", "Dedicated"}
+    assert usage.gpus is not None
+    assert len(usage.gpus) == 2
+    assert {gpu.type for gpu in usage.gpus} == {"Integrated", "Dedicated"}
+
+
+def test_gpu_list_endpoint_returns_structured_summary(monkeypatch):
+    nvidia_gpu = GpuDeviceInfoResponse(
+        device_index=0,
+        manufacturer="NVIDIA",
+        model="NVIDIA GeForce RTX 2050",
+        vendor="NVIDIA",
+        gpu_type="Dedicated",
+        total_memory_bytes=4 * 1024**3,
+        driver_version="555.42",
+        monitoring_supported=True,
+    )
+    monkeypatch.setattr(
+        gpu_service,
+        "_detect_system_gpus",
+        lambda: ([nvidia_gpu], True),
+    )
+    gpu_service.reset_gpu_usage_cache()
+
+    response = TestClient(app).get("/api/gpu/list")
+    assert response.status_code == 200
+    data = response.json()
+    assert "gpus" in data
+    assert len(data["gpus"]) >= 1
+    gpu = data["gpus"][0]
+    assert gpu["name"] == "NVIDIA GeForce RTX 2050"
+    assert gpu["vendor"] == "NVIDIA"
+    assert gpu["type"] == "Dedicated"
+

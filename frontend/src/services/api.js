@@ -43,6 +43,11 @@ export async function getGpuUsage({ signal } = {}) {
   return data;
 }
 
+export async function getGpuList({ signal } = {}) {
+  const { data } = await api.get("/api/gpu/list", { signal });
+  return data;
+}
+
 export async function getTemperatureInfo({ signal } = {}) {
   const { data } = await api.get("/api/temperature", { signal });
   return data;
@@ -317,8 +322,10 @@ export async function downloadPdfReport({
   signal,
 } = {}) {
   const response = await api.get("/api/reports/pdf", {
-    params: { range, type },
+    params: { range, type, _t: Date.now() },
+    headers: { "Cache-Control": "no-cache" },
     responseType: "blob",
+    timeout: 60000,
     signal,
   });
   return response;

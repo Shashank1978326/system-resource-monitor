@@ -373,3 +373,94 @@ def test_temporary_file_cleanup(client: TestClient) -> None:
     # Verify no persistent .png or .pdf image files were left behind in working dir
     after_pngs = glob.glob("*.png") + glob.glob("*.pdf")
     assert len(after_pngs) == len(before_pngs)
+
+
+# ---------------------------------------------------------------------------
+# 20. Title-Case Severity Counting & Specialized Report Charts
+# ---------------------------------------------------------------------------
+def test_title_case_severities_and_specialized_report_charts(client: TestClient) -> None:
+    now = datetime.now(timezone.utc)
+    with database.session_factory.begin() as session:
+        for i in range(6):
+            session.add(
+                HistoricalMetrics(
+                    timestamp=now - timedelta(minutes=i * 10),
+                    cpu_utilization_percent=30.0 + i,
+                    ram_utilization_percent=60.0 + i,
+                    disk_read_speed=2048.0 * (i + 1),
+                    disk_write_speed=1024.0 * (i + 1),
+                    disk_utilization_percent=50.0,
+                    network_download_speed=4096.0 * (i + 1),
+                    network_upload_speed=2048.0 * (i + 1),
+                )
+            )
+        session.add(
+            AlertEvent(
+                resource="ram",
+                severity="Critical",
+                message="RAM usage reached critical level",
+                utilization_percent=92.0,
+                configured_threshold_percent=90.0,
+                timestamp=now - timedelta(minutes=5),
+            )
+        )
+        session.add(
+            AnomalyEvent(
+                resource="cpu",
+                metric="cpu_utilization",
+                actual_value=95.0,
+                expected_value=30.0,
+                standard_deviation=5.0,
+                z_score=13.0,
+                severity="Warning",
+                message="CPU spike",
+                timestamp=now - timedelta(minutes=4),
+            )
+        )
+
+    data = report_service.collect_report_data("24h")
+    assert data["alert_counts"]["critical"] == 1
+    assert data["anomaly_counts"]["warning"] == 1
+    assert data["anomaly_breakdown"][0]["warning"] == 1
+
+    # Verify every specialized report type produces a valid PDF with embedded charts
+    for rtype in ("cpu_memory", "disk_network", "process_resource", "alerts_anomaly", "prediction_accuracy"):
+        res = client.get(f"/api/reports/pdf?range=24h&type={rtype}")
+        assert res.status_code == 200
+        assert res.content.startswith(b"%PDF-")
+        assert b"/Image" in res.content or b"/XObject" in res.content
+
+
+# ---------------------------------------------------------------------------
+# 21. No-Cache Headers & SQL Time-Bucketed Historical Aggregation
+# ---------------------------------------------------------------------------
+def test_no_cache_headers_and_time_bucketed_history(client: TestClient) -> None:
+    now = datetime.now(timezone.utc)
+    with database.session_factory.begin() as session:
+        # Insert 240 rows across 20h inside the 24h window (> max_points=120) so SQL bucketing runs
+        for i in range(240):
+            session.add(
+                HistoricalMetrics(
+                    timestamp=now - timedelta(minutes=(239 - i) * 5),
+                    cpu_utilization_percent=10.0 + (i % 50),
+                    ram_utilization_percent=40.0 + (i % 30),
+                    disk_read_speed=1024.0 * (i + 1),
+                    disk_write_speed=512.0 * (i + 1),
+                    disk_utilization_percent=55.0,
+                    network_download_speed=2048.0 * (i + 1),
+                    network_upload_speed=1024.0 * (i + 1),
+                )
+            )
+
+    data = report_service.collect_report_data("24h", report_type="cpu_memory")
+    assert data["historical_stats"]["sample_count"] == 240
+    assert data["historical_stats"]["first_timestamp"] is not None
+    assert data["historical_stats"]["last_timestamp"] is not None
+    assert 50 <= len(data["timeseries_records"]) <= 125
+
+    res = client.get("/api/reports/pdf?range=24h&type=cpu_memory")
+    assert res.status_code == 200
+    assert "no-store" in res.headers.get("cache-control", "").lower()
+    assert b"Recorded History Span" in res.content
+
+

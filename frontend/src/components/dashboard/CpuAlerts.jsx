@@ -349,7 +349,7 @@ export default function CpuAlerts() {
                   {formatPercent(battery.critical_threshold_percent)}
                 </small>
                 <small>
-                  Status: {battery.charging_state ? (battery.charging_state.charAt(0).toUpperCase() + battery.charging_state.slice(1)) : "Unknown"}
+                  Status: {battery.charging_state ? (battery.charging_state.charAt(0).toUpperCase() + battery.charging_state.slice(1).replace(/_/g, " ")) : "Unknown"}
                   {battery.power_plugged !== null && battery.power_plugged !== undefined ? ` · ${battery.power_plugged ? "Plugged in" : "On battery"}` : ""}
                 </small>
                 <small>Sample: {formatTimestamp(battery.timestamp)}</small>

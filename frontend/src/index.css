@@ -1822,8 +1822,16 @@ a {
 .gpu-overview-device-heading {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 10px;
   margin-bottom: 8px;
+}
+
+.gpu-overview-device-heading > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
 }
 
 .gpu-overview-device-heading strong {
@@ -4030,10 +4038,9 @@ a {
 }
 
 .report-selection-scroll {
-  max-height: 340px;
-  overflow-y: auto;
-  padding-right: 4px;
-  scrollbar-width: thin;
+  max-height: none;
+  overflow-y: visible;
+  padding-right: 0;
 }
 
 .report-select-tile {
@@ -5434,4 +5441,89 @@ a {
     gap: 12px;
     text-align: center;
   }
+}
+
+
+/* Simultaneous Multi-GPU Badges & Activity Status */
+.gpu-badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.gpu-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--text-soft);
+}
+
+.gpu-badge-vendor-nvidia {
+  border-color: color-mix(in srgb, #76b900 45%, var(--border));
+  background: color-mix(in srgb, #76b900 12%, var(--surface));
+  color: #5a8f00;
+}
+
+.gpu-badge-vendor-intel {
+  border-color: color-mix(in srgb, #0071c5 45%, var(--border));
+  background: color-mix(in srgb, #0071c5 12%, var(--surface));
+  color: #0071c5;
+}
+
+.gpu-badge-vendor-amd {
+  border-color: color-mix(in srgb, #ed1c24 45%, var(--border));
+  background: color-mix(in srgb, #ed1c24 12%, var(--surface));
+  color: #c81920;
+}
+
+.gpu-activity-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  border-radius: 12px;
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
+.gpu-activity-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.gpu-activity-active {
+  background: color-mix(in srgb, var(--green, #1e9e68) 15%, var(--surface));
+  color: var(--green, #1e9e68);
+}
+
+.gpu-activity-idle {
+  background: color-mix(in srgb, var(--accent, #3b82f6) 11%, var(--surface));
+  color: var(--text-soft);
+}
+
+.gpu-activity-unavailable {
+  background: color-mix(in srgb, var(--amber, #d97706) 14%, var(--surface));
+  color: var(--amber, #b45309);
+}
+
+.gpu-method-note {
+  margin-top: 10px;
+  font-size: 9.5px;
+  color: var(--text-muted);
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
 }

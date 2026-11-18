@@ -4,7 +4,7 @@ import Panel from "../common/Panel";
 import { EmptyState, ErrorBanner, Skeleton } from "../common/StateMessage";
 import { errorMessage, getGpuUsage } from "../../services/api";
 
-const REFRESH_INTERVAL_MS = 5000;
+const REFRESH_INTERVAL_MS = 4000;
 
 function metric(value, suffix = "%") {
   return typeof value === "number" && Number.isFinite(value)
@@ -22,6 +22,24 @@ function stateMessage(status) {
     return "GPU Monitoring Not Supported";
   }
   return "GPU Data Unavailable";
+}
+
+function resolveActivity(device) {
+  if (device.activity_status) return device.activity_status;
+  if (
+    typeof device.gpu_utilization_percent === "number" &&
+    Number.isFinite(device.gpu_utilization_percent)
+  ) {
+    return device.gpu_utilization_percent >= 1 ? "Active" : "Idle";
+  }
+  return device.available ? "Idle" : "Unavailable";
+}
+
+function activityClass(activity) {
+  const normalized = String(activity || "").toLowerCase();
+  if (normalized === "active") return "gpu-activity-active";
+  if (normalized === "idle") return "gpu-activity-idle";
+  return "gpu-activity-unavailable";
 }
 
 export default function GpuOverview() {
@@ -72,8 +90,8 @@ export default function GpuOverview() {
 
   return (
     <Panel
-      title="GPU monitoring"
-      subtitle="Optional hardware readings · refreshes every 5 seconds"
+      title="Multi-GPU monitoring"
+      subtitle="Simultaneous independent telemetry · refreshes every 4 seconds"
       action={<Link className="panel-link" to="/gpu">View GPUs ↗</Link>}
     >
       {error && <ErrorBanner message={error} />}
@@ -92,55 +110,67 @@ export default function GpuOverview() {
             </p>
           )}
           <div className="gpu-overview-list">
-            {usage.devices.map((device) => (
-              <div className="gpu-overview-device" key={device.device_index}>
-                <div className="gpu-overview-device-heading">
-                  <strong>
-                    {device.name || `${device.manufacturer || "GPU"} device ${device.device_index}`}
-                  </strong>
-                  <span>{device.manufacturer || "Unknown"}</span>
-                </div>
-                {device.available ? (
-                  <div className="gpu-overview-metrics">
-                    {typeof device.gpu_utilization_percent === "number" && (
+            {usage.devices.map((device) => {
+              const vendor = device.vendor || device.manufacturer || "Unknown";
+              const gpuType = device.gpu_type || "Unknown";
+              const isIntegrated = gpuType === "Integrated";
+              const activity = resolveActivity(device);
+
+              return (
+                <div className="gpu-overview-device" key={device.device_index}>
+                  <div className="gpu-overview-device-heading">
+                    <div>
+                      <strong>
+                        {device.name || `${vendor} device ${device.device_index}`}
+                      </strong>
+                      <span>
+                        {vendor} · {gpuType}
+                      </span>
+                    </div>
+                    <span className={`gpu-activity-badge ${activityClass(activity)}`}>
+                      <span className="gpu-activity-dot" aria-hidden="true" />
+                      {activity}
+                    </span>
+                  </div>
+                  {device.available ? (
+                    <div className="gpu-overview-metrics">
                       <span>
                         Utilization <strong>{metric(device.gpu_utilization_percent)}</strong>
                       </span>
-                    )}
-                    {(typeof device.memory_used_mb === "number" ||
-                      typeof device.memory_total_mb === "number") && (
-                      <span>
-                        VRAM
-                        {typeof device.memory_used_mb === "number" && (
-                          <strong> used {memoryMetric(device.memory_used_mb)} MB</strong>
-                        )}
-                        {typeof device.memory_total_mb === "number" && (
-                          <strong> total {memoryMetric(device.memory_total_mb)} MB</strong>
-                        )}
-                      </span>
-                    )}
-                    {typeof device.temperature_celsius === "number" && (
-                      <span>
-                        Temperature{" "}
-                        <strong>{metric(device.temperature_celsius, " °C")}</strong>
-                      </span>
-                    )}
-                    <span>
-                      Power <strong>{metric(device.power_usage_watts, " W")}</strong>
+                      {(typeof device.memory_used_mb === "number" ||
+                        typeof device.memory_total_mb === "number") && (
+                        <span>
+                          {isIntegrated ? "Shared RAM" : "VRAM"}
+                          {typeof device.memory_used_mb === "number" && (
+                            <strong> {memoryMetric(device.memory_used_mb)} MB</strong>
+                          )}
+                          {typeof device.memory_total_mb === "number" && (
+                            <strong> / {memoryMetric(device.memory_total_mb)} MB</strong>
+                          )}
+                        </span>
+                      )}
+                      {typeof device.temperature_celsius === "number" && (
+                        <span>
+                          Temp{" "}
+                          <strong>{metric(device.temperature_celsius, " °C")}</strong>
+                        </span>
+                      )}
+                      {typeof device.power_usage_watts === "number" && (
+                        <span>
+                          Power <strong>{metric(device.power_usage_watts, " W")}</strong>
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="gpu-overview-unavailable">
+                      {device.status === "unsupported"
+                        ? "GPU Monitoring Not Supported"
+                        : "GPU Data Unavailable"}
                     </span>
-                    <span>
-                      Power limit <strong>{metric(device.power_limit_watts, " W")}</strong>
-                    </span>
-                  </div>
-                ) : (
-                  <span className="gpu-overview-unavailable">
-                    {device.status === "unsupported"
-                      ? "GPU Monitoring Not Supported"
-                      : "GPU Data Unavailable"}
-                  </span>
-                )}
-              </div>
-            ))}
+                  )}
+                </div>
+              );
+            })}
           </div>
         </>
       )}

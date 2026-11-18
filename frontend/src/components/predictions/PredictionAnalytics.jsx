@@ -375,7 +375,7 @@ export default function PredictionAnalytics() {
                   : "—"}
               </strong>
               <small className="analytics-metric-subtext">
-                Model goodness-of-fit ($R^2$); distinct from accuracy
+                Model goodness-of-fit (R²); distinct from accuracy
               </small>
             </div>
           </div>

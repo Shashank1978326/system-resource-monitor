@@ -9,8 +9,8 @@ const GPU_REFRESH_INTERVAL_MS = 3000;
 const MAX_GPU_GRAPH_POINTS = 60;
 
 const statusLabels = {
-  available: "GPU monitoring available",
-  partial: "Partial GPU monitoring available",
+  available: "Multi-GPU monitoring available",
+  partial: "Multi-GPU monitoring active (partial sensor telemetry)",
   unsupported: "GPU Monitoring Not Supported",
   monitoring_unsupported: "GPU Monitoring Not Supported",
   library_unavailable: "GPU Monitoring Not Supported",
@@ -55,6 +55,38 @@ function formatWatts(value) {
     : "Unavailable";
 }
 
+function formatClock(value) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${Math.round(value).toLocaleString()} MHz`
+    : "Unavailable";
+}
+
+function vendorClassName(vendor) {
+  const normalized = String(vendor || "").toLowerCase();
+  if (normalized.includes("nvidia")) return "gpu-badge-vendor-nvidia";
+  if (normalized.includes("intel")) return "gpu-badge-vendor-intel";
+  if (normalized.includes("amd")) return "gpu-badge-vendor-amd";
+  return "";
+}
+
+function resolveActivityStatus(device) {
+  if (device.activity_status) return device.activity_status;
+  if (
+    typeof device.gpu_utilization_percent === "number" &&
+    Number.isFinite(device.gpu_utilization_percent)
+  ) {
+    return device.gpu_utilization_percent >= 1 ? "Active" : "Idle";
+  }
+  return device.available ? "Idle" : "Unavailable";
+}
+
+function activityClassName(activity) {
+  const normalized = String(activity || "").toLowerCase();
+  if (normalized === "active") return "gpu-activity-active";
+  if (normalized === "idle") return "gpu-activity-idle";
+  return "gpu-activity-unavailable";
+}
+
 function UsageProgress({ label, value, variant }) {
   const available =
     typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100;
@@ -64,7 +96,7 @@ function UsageProgress({ label, value, variant }) {
         <span>{label}</span>
         <strong>{available ? `${value.toFixed(1)}%` : "Unavailable"}</strong>
       </div>
-      {available && (
+      {available ? (
         <div
           className="gpu-progress-track"
           role="progressbar"
@@ -73,8 +105,10 @@ function UsageProgress({ label, value, variant }) {
           aria-valuemax={100}
           aria-valuenow={value}
         >
-          <span style={{ width: `${value}%` }} />
+          <span style={{ width: `${Math.max(0, Math.min(100, value))}%` }} />
         </div>
+      ) : (
+        <div className="gpu-progress-track gpu-progress-unavailable" aria-hidden="true" />
       )}
     </div>
   );
@@ -127,7 +161,7 @@ export default function GpuInfo() {
         const time = new Date(result.timestamp).toLocaleTimeString();
         setGpuHistory((current) => {
           const next = { ...current };
-          for (const device of result.devices) {
+          for (const device of result.devices || []) {
             const points = current[device.device_index] || [];
             if (points.length && points[points.length - 1].timestamp === result.timestamp) {
               continue;
@@ -178,6 +212,14 @@ export default function GpuInfo() {
     ? new Date(gpuUsage.timestamp).toLocaleTimeString()
     : "Waiting for first sample";
 
+  const usageDevices = gpuUsage?.devices || [];
+  const activeCount = usageDevices.filter(
+    (device) => resolveActivityStatus(device) === "Active"
+  ).length;
+  const idleCount = usageDevices.filter(
+    (device) => resolveActivityStatus(device) === "Idle"
+  ).length;
+
   return (
     <div className="gpu-page">
       {error && <ErrorBanner message={error} onRetry={retry} />}
@@ -193,100 +235,118 @@ export default function GpuInfo() {
       ) : gpuInfo ? (
         <>
           <Panel
-            title="GPU detection"
-            subtitle="Hardware detection and available monitoring providers"
+            title="GPU hardware detection"
+            subtitle="All installed display adapters are detected independently of current workload"
             action={action}
           >
             <div className="gpu-detection-summary">
               <span
-                className={`gpu-status-indicator ${gpuInfo.supported_gpu_detected ? "gpu-status-available" : ""}`}
+                className={`gpu-status-indicator ${
+                  gpuInfo.supported_gpu_detected ? "gpu-status-available" : ""
+                }`}
                 aria-hidden="true"
               />
               <div>
                 <strong>{statusLabels[gpuInfo.status] || "GPU detection status"}</strong>
-                <p>{gpuInfo.message || "GPU hardware was detected and monitoring is available."}</p>
+                <p>
+                  {gpuInfo.message ||
+                    "All detected GPU adapters are monitored independently in real time."}
+                </p>
               </div>
             </div>
             <div className="gpu-info-meta">
               <div className="info-field">
-                <span>GPU monitoring</span>
+                <span>Detected adapters</span>
+                <strong>{gpuInfo.devices.length}</strong>
+              </div>
+              <div className="info-field">
+                <span>Workload activity</span>
                 <strong>
-                  {gpuInfo.monitoring_available
-                    ? "Available"
-                    : gpuInfo.status === "no_gpu"
-                      ? "No GPU detected"
-                      : "Not supported"}
+                  {usageDevices.length
+                    ? `${activeCount} Active · ${idleCount} Idle`
+                    : "Sampling..."}
                 </strong>
               </div>
               <div className="info-field">
-                <span>Detected devices</span>
-                <strong>{gpuInfo.devices.length}</strong>
+                <span>Monitoring status</span>
+                <strong>
+                  {gpuInfo.monitoring_available ? "Active" : "Unsupported"}
+                </strong>
+              </div>
+              <div className="info-field">
+                <span>Last telemetry sample</span>
+                <strong>{sampleTime}</strong>
               </div>
             </div>
           </Panel>
+
           <Panel
-            title="Live GPU usage"
-            subtitle={`Updates every ${GPU_REFRESH_INTERVAL_MS / 1000} seconds · Last sample: ${sampleTime}`}
+            title="Simultaneous multi-GPU telemetry"
+            subtitle={`Independent real-time monitoring for every installed GPU · refreshes every ${
+              GPU_REFRESH_INTERVAL_MS / 1000
+            }s`}
           >
-            {usageError && (
-              <ErrorBanner
-                message={
-                  gpuUsage
-                    ? `${usageError} Showing the last successful readings.`
-                    : usageError
-                }
-              />
-            )}
+            {usageError && <ErrorBanner message={usageError} onRetry={retry} />}
             {usageLoading && !gpuUsage ? (
               <div className="gpu-device-grid">
                 <Skeleton className="info-skeleton" />
+                <Skeleton className="info-skeleton" />
               </div>
-            ) : !gpuUsage || gpuUsage.devices.length === 0 ? (
+            ) : !usageDevices.length ? (
               <EmptyState
                 title={
-                  gpuUsage?.status === "unsupported"
-                    || gpuUsage?.status === "no_gpu"
-                    ? "GPU Not Available"
-                    : gpuUsage?.status === "monitoring_unsupported"
-                      ? "GPU Monitoring Not Supported"
-                      : "GPU Data Unavailable"
+                  unavailableDetails[gpuUsage?.status || gpuInfo.status]?.title ||
+                  "GPU Data Unavailable"
                 }
-                message={gpuUsage?.message || "Waiting for a GPU measurement."}
+                message={
+                  gpuUsage?.message ||
+                  unavailableDetails[gpuUsage?.status || gpuInfo.status]?.message
+                }
               />
             ) : (
               <div className="gpu-device-grid">
-                {gpuUsage.devices.map((device) => {
+                {usageDevices.map((device) => {
+                  const vendor = device.vendor || device.manufacturer || "Unknown";
+                  const gpuType = device.gpu_type || "Unknown";
+                  const isIntegrated = gpuType === "Integrated";
+                  const activity = resolveActivityStatus(device);
                   const history = gpuHistory[device.device_index] || [];
-                  const hasGpuHistory = history.some((point) => typeof point.gpu === "number");
-                  const hasMemoryHistory = history.some((point) => typeof point.memory === "number");
+                  const hasGpuHistory = history.some(
+                    (point) => typeof point.gpu === "number" && Number.isFinite(point.gpu)
+                  );
+                  const hasMemoryHistory = history.some(
+                    (point) =>
+                      typeof point.memory === "number" && Number.isFinite(point.memory)
+                  );
+
                   return (
                     <section className="gpu-usage-card" key={device.device_index}>
                       <div className="gpu-usage-heading">
                         <div>
-                          <h3>{device.name || `${device.manufacturer || "GPU"} device ${device.device_index}`}</h3>
-                          <span>{device.manufacturer || "Unknown manufacturer"} · Device {device.device_index}</span>
+                          <h3>
+                            {device.name || `${vendor} GPU ${device.device_index}`}
+                          </h3>
+                          <div className="gpu-badge-row">
+                            <span className={`gpu-badge ${vendorClassName(vendor)}`}>
+                              {vendor}
+                            </span>
+                            <span className="gpu-badge">{gpuType}</span>
+                            <span className="gpu-badge">GPU {device.device_index}</span>
+                          </div>
                         </div>
                         <span
-                          className={`gpu-usage-status gpu-usage-status-${device.status}`}
+                          className={`gpu-activity-badge ${activityClassName(activity)}`}
+                          title={`Hardware telemetry state: ${activity}`}
                         >
-                          {device.status === "available"
-                            ? "Available"
-                            : device.status === "unsupported"
-                              ? "Monitoring unsupported"
-                              : device.status === "partial"
-                              ? "Partial readings"
-                              : "Unavailable"}
+                          <span className="gpu-activity-dot" aria-hidden="true" />
+                          {activity}
                         </span>
                       </div>
-                      {!device.monitoring_supported ? (
+
+                      {device.status === "unsupported" && !device.available ? (
                         <EmptyState
                           title="GPU Monitoring Not Supported"
-                          message="The adapter is detected, but no compatible metrics provider is available."
-                        />
-                      ) : !device.available ? (
-                        <EmptyState
-                          title="GPU Data Unavailable"
-                          message="The GPU was detected, but its measurements could not be collected."
+                          message="Hardware telemetry counters are unavailable for this adapter."
                         />
                       ) : (
                         <>
@@ -295,21 +355,47 @@ export default function GpuInfo() {
                             value={device.gpu_utilization_percent}
                           />
                           <UsageProgress
-                            label="VRAM utilization"
+                            label={
+                              isIntegrated
+                                ? "Shared GPU memory utilization"
+                                : "Dedicated VRAM utilization"
+                            }
                             value={device.memory_utilization_percent}
                             variant="memory"
                           />
                           <div className="gpu-memory-values">
                             {[
-                              ["Memory used", formatMegabytes(device.memory_used_mb)],
-                              ["Memory free", formatMegabytes(device.memory_free_mb)],
-                              ["Memory total", formatMegabytes(device.memory_total_mb)],
+                              [
+                                isIntegrated ? "Shared memory used" : "Dedicated VRAM used",
+                                formatMegabytes(device.memory_used_mb),
+                              ],
+                              [
+                                isIntegrated ? "Shared memory free" : "Dedicated VRAM free",
+                                formatMegabytes(device.memory_free_mb),
+                              ],
+                              [
+                                isIntegrated ? "Shared memory total" : "Dedicated VRAM total",
+                                formatMegabytes(device.memory_total_mb),
+                              ],
+                              ...(!isIntegrated &&
+                              (typeof device.shared_memory_used_mb === "number" ||
+                                typeof device.shared_memory_total_mb === "number")
+                                ? [
+                                    [
+                                      "Shared memory",
+                                      `${formatMegabytes(device.shared_memory_used_mb)} / ${formatMegabytes(
+                                        device.shared_memory_total_mb
+                                      )}`,
+                                    ],
+                                  ]
+                                : []),
                               [
                                 "Temperature",
                                 typeof device.temperature_celsius === "number"
                                   ? `${device.temperature_celsius.toFixed(1)} °C`
                                   : "Unavailable",
                               ],
+                              ["Clock speed", formatClock(device.clock_speed_mhz)],
                               ["Power consumption", formatWatts(device.power_usage_watts)],
                               ["Power limit", formatWatts(device.power_limit_watts)],
                             ].map(([label, value]) => (
@@ -323,7 +409,9 @@ export default function GpuInfo() {
                             <div className="gpu-chart-grid">
                               {hasGpuHistory && (
                                 <div>
-                                  <span className="gpu-chart-title">GPU utilization</span>
+                                  <span className="gpu-chart-title">
+                                    GPU utilization (%)
+                                  </span>
                                   <LiveChart
                                     data={history}
                                     metric="gpu"
@@ -335,7 +423,11 @@ export default function GpuInfo() {
                               )}
                               {hasMemoryHistory && (
                                 <div>
-                                  <span className="gpu-chart-title">VRAM utilization</span>
+                                  <span className="gpu-chart-title">
+                                    {isIntegrated
+                                      ? "Shared memory (%)"
+                                      : "Dedicated VRAM (%)"}
+                                  </span>
                                   <LiveChart
                                     data={history}
                                     metric="memory"
@@ -347,6 +439,14 @@ export default function GpuInfo() {
                               )}
                             </div>
                           )}
+                          <div className="gpu-method-note">
+                            <span>
+                              Provider: {device.monitoring_method || "System Detection"}
+                            </span>
+                            {device.driver_version && (
+                              <span>Driver: {device.driver_version}</span>
+                            )}
+                          </div>
                         </>
                       )}
                     </section>
@@ -355,35 +455,62 @@ export default function GpuInfo() {
               </div>
             )}
           </Panel>
+
           {gpuInfo.devices.length ? (
-            <div className="gpu-device-grid">
-              {gpuInfo.devices.map((device) => (
-                <Panel
-                  key={device.device_index}
-                  title={device.model || `${device.manufacturer} GPU`}
-                  subtitle={`${device.manufacturer} · Device ${device.device_index}`}
-                >
-                  <div className="info-grid">
-                    <div className="info-field">
-                      <span>Manufacturer</span>
-                      <strong>{device.manufacturer || "Unavailable"}</strong>
-                    </div>
-                    {typeof device.total_memory_bytes === "number" && (
-                      <div className="info-field">
-                        <span>Total GPU memory</span>
-                        <strong>{formatBytes(device.total_memory_bytes)}</strong>
+            <Panel
+              title="Installed GPU hardware inventory"
+              subtitle="Physical graphics hardware specifications detected by the operating system"
+            >
+              <div className="gpu-device-grid">
+                {gpuInfo.devices.map((device) => {
+                  const vendor = device.vendor || device.manufacturer || "Unknown";
+                  const gpuType = device.gpu_type || "Unknown";
+                  return (
+                    <section className="gpu-usage-card" key={`inv-${device.device_index}`}>
+                      <div className="gpu-usage-heading">
+                        <div>
+                          <h3>{device.model || `${vendor} GPU`}</h3>
+                          <div className="gpu-badge-row">
+                            <span className={`gpu-badge ${vendorClassName(vendor)}`}>
+                              {vendor}
+                            </span>
+                            <span className="gpu-badge">{gpuType}</span>
+                          </div>
+                        </div>
                       </div>
-                    )}
-                    {device.driver_version && (
-                      <div className="info-field">
-                        <span>Driver version</span>
-                        <strong>{device.driver_version}</strong>
+                      <div className="info-grid">
+                        <div className="info-field">
+                          <span>Vendor</span>
+                          <strong>{vendor}</strong>
+                        </div>
+                        <div className="info-field">
+                          <span>Architecture type</span>
+                          <strong>{gpuType}</strong>
+                        </div>
+                        <div className="info-field">
+                          <span>Dedicated VRAM</span>
+                          <strong>
+                            {typeof device.total_memory_bytes === "number"
+                              ? formatBytes(device.total_memory_bytes)
+                              : "Shared System RAM"}
+                          </strong>
+                        </div>
+                        {typeof device.shared_memory_bytes === "number" && (
+                          <div className="info-field">
+                            <span>Shared system memory</span>
+                            <strong>{formatBytes(device.shared_memory_bytes)}</strong>
+                          </div>
+                        )}
+                        <div className="info-field">
+                          <span>Driver version</span>
+                          <strong>{device.driver_version || "Unavailable"}</strong>
+                        </div>
                       </div>
-                    )}
-                  </div>
-                </Panel>
-              ))}
-            </div>
+                    </section>
+                  );
+                })}
+              </div>
+            </Panel>
           ) : (
             <Panel title="GPU devices">
               <EmptyState

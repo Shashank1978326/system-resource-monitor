@@ -7,6 +7,7 @@ import os
 import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
 
 # Configure headless Matplotlib with a dedicated writable cache directory before importing matplotlib/pyplot
@@ -39,7 +40,7 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
-from sqlalchemy import func, select
+from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.database.connection import database
@@ -406,16 +407,19 @@ class ReportChartGenerator:
                 "No statistical anomalies detected during this reporting window. Telemetry variance was nominal.",
             )
         fig, ax = plt.subplots(figsize=(6.2, 1.8))
-        warn_ts = [e.timestamp for e in anomaly_events if e.severity == "warning"]
-        crit_ts = [e.timestamp for e in anomaly_events if e.severity == "critical"]
+        warn_ts = [e.timestamp for e in anomaly_events if (e.severity or "").strip().lower() == "warning"]
+        crit_ts = [e.timestamp for e in anomaly_events if (e.severity or "").strip().lower() == "critical"]
         
         bins = min(15, max(3, len(anomaly_events)))
         if warn_ts and crit_ts:
             ax.hist([warn_ts, crit_ts], bins=bins, color=["#f59e0b", "#ef4444"], label=["Warning", "Critical"], stacked=True)
         elif warn_ts:
             ax.hist(warn_ts, bins=bins, color="#f59e0b", label="Warning")
-        else:
+        elif crit_ts:
             ax.hist(crit_ts, bins=bins, color="#ef4444", label="Critical")
+        else:
+            all_ts = [e.timestamp for e in anomaly_events]
+            ax.hist(all_ts, bins=bins, color="#64748b", label="Anomaly")
 
         ax.set_ylabel("Anomaly Count", fontsize=7.5, color="#475569")
         ax.set_title("Statistical Anomaly Frequency Timeline", fontsize=9, fontweight="bold", color="#1e293b")
@@ -541,11 +545,14 @@ class ReportService:
         self._lock = threading.Lock()
 
     def collect_historical_aggregates(
-        self, start_time: datetime
+        self, start_time: datetime, end_time: datetime | None = None
     ) -> dict[str, Any]:
         """Aggregate CPU, memory, disk, and network historical statistics from SQLite."""
         try:
             with self.session_factory() as session:
+                filters = [HistoricalMetrics.timestamp >= start_time]
+                if end_time is not None:
+                    filters.append(HistoricalMetrics.timestamp <= end_time)
                 stmt = select(
                     func.count(HistoricalMetrics.id),
                     func.min(HistoricalMetrics.cpu_utilization_percent),
@@ -563,7 +570,9 @@ class ReportService:
                     func.avg(HistoricalMetrics.network_upload_speed),
                     func.max(HistoricalMetrics.network_upload_speed),
                     func.avg(HistoricalMetrics.disk_utilization_percent),
-                ).where(HistoricalMetrics.timestamp >= start_time)
+                    func.min(HistoricalMetrics.timestamp),
+                    func.max(HistoricalMetrics.timestamp),
+                ).where(*filters)
 
                 row = session.execute(stmt).one()
 
@@ -585,27 +594,78 @@ class ReportService:
                     "net_up_avg": row[13],
                     "net_up_max": row[14],
                     "disk_util_avg": round(row[15], 1) if row[15] is not None else None,
+                    "first_timestamp": row[16],
+                    "last_timestamp": row[17],
                 }
         except SQLAlchemyError as exc:
             logger.exception("Failed to query historical metrics aggregates")
             raise exc
 
     def collect_historical_records(
-        self, start_time: datetime, max_points: int = 120
-    ) -> list[HistoricalMetrics]:
-        """Fetch sampled historical records for timeseries charts."""
+        self,
+        start_time: datetime,
+        max_points: int = 120,
+        end_time: datetime | None = None,
+    ) -> list[Any]:
+        """Fetch time-bucketed averaged historical records for timeseries charts."""
+        effective_end = end_time or datetime.now(timezone.utc)
         try:
             with self.session_factory() as session:
-                stmt = (
-                    select(HistoricalMetrics)
-                    .where(HistoricalMetrics.timestamp >= start_time)
-                    .order_by(HistoricalMetrics.timestamp.asc())
+                filters = [
+                    HistoricalMetrics.timestamp >= start_time,
+                    HistoricalMetrics.timestamp <= effective_end,
+                ]
+                total_count = session.execute(
+                    select(func.count(HistoricalMetrics.id)).where(*filters)
+                ).scalar_one()
+
+                if total_count <= max_points:
+                    stmt = (
+                        select(HistoricalMetrics)
+                        .where(*filters)
+                        .order_by(HistoricalMetrics.timestamp.asc())
+                    )
+                    return list(session.scalars(stmt))
+
+                # Aggregate directly in SQL into evenly spaced time buckets across the exact window
+                span_seconds = max(60.0, (effective_end - start_time).total_seconds())
+                bucket_seconds = max(1, int(math.ceil(span_seconds / max_points)))
+                epoch_expr = cast(func.strftime("%s", HistoricalMetrics.timestamp), Integer)
+                bucket_expr = cast(epoch_expr / bucket_seconds, Integer) * bucket_seconds
+
+                bucket_stmt = (
+                    select(
+                        bucket_expr.label("bucket_epoch"),
+                        func.avg(HistoricalMetrics.cpu_utilization_percent),
+                        func.avg(HistoricalMetrics.ram_utilization_percent),
+                        func.avg(HistoricalMetrics.disk_utilization_percent),
+                        func.avg(HistoricalMetrics.disk_read_speed),
+                        func.avg(HistoricalMetrics.disk_write_speed),
+                        func.avg(HistoricalMetrics.network_download_speed),
+                        func.avg(HistoricalMetrics.network_upload_speed),
+                    )
+                    .where(*filters)
+                    .group_by(bucket_expr)
+                    .order_by(bucket_expr.asc())
                 )
-                records = list(session.scalars(stmt))
-                if len(records) > max_points:
-                    step = max(1, len(records) // max_points)
-                    records = records[::step]
-                return records
+
+                bucketed: list[Any] = []
+                for row in session.execute(bucket_stmt):
+                    if row[0] is None:
+                        continue
+                    bucketed.append(
+                        SimpleNamespace(
+                            timestamp=datetime.fromtimestamp(int(row[0]), tz=timezone.utc),
+                            cpu_utilization_percent=row[1],
+                            ram_utilization_percent=row[2],
+                            disk_utilization_percent=row[3],
+                            disk_read_speed=row[4],
+                            disk_write_speed=row[5],
+                            network_download_speed=row[6],
+                            network_upload_speed=row[7],
+                        )
+                    )
+                return bucketed
         except SQLAlchemyError as exc:
             logger.exception("Failed to fetch timeseries historical metrics")
             raise exc
@@ -631,9 +691,10 @@ class ReportService:
                 )
                 counts: dict[str, int] = {"warning": 0, "critical": 0, "total": 0}
                 for sev, cnt in session.execute(count_stmt):
-                    if sev == "warning":
+                    norm = (sev or "").strip().lower()
+                    if norm == "warning":
                         counts["warning"] += cnt
-                    elif sev == "critical":
+                    elif norm == "critical":
                         counts["critical"] += cnt
                     counts["total"] += cnt
 
@@ -655,9 +716,10 @@ class ReportService:
                     .group_by(AnomalyEvent.severity)
                 )
                 for sev, cnt in session.execute(count_stmt):
-                    if sev == "warning":
+                    norm = (sev or "").strip().lower()
+                    if norm == "warning":
                         counts["warning"] += cnt
-                    elif sev == "critical":
+                    elif norm == "critical":
                         counts["critical"] += cnt
                     counts["total"] += cnt
 
@@ -675,20 +737,21 @@ class ReportService:
                 for res, sev, cnt in session.execute(breakdown_stmt):
                     if res not in breakdown_dict:
                         breakdown_dict[res] = {"total": 0, "warning": 0, "critical": 0}
-                    if sev in breakdown_dict[res]:
-                        breakdown_dict[res][sev] += cnt
+                    norm = (sev or "").strip().lower()
+                    if norm in ("warning", "critical"):
+                        breakdown_dict[res][norm] += cnt
                     breakdown_dict[res]["total"] += cnt
 
                 breakdown_list = [
                     {"resource": r, **breakdown_dict[r]} for r in sorted(breakdown_dict.keys())
                 ]
 
-                # Recent anomaly events
+                # Recent anomaly events (fetch up to 500 for accurate frequency timeline)
                 recent_stmt = (
                     select(AnomalyEvent)
                     .where(AnomalyEvent.timestamp >= start_time)
                     .order_by(AnomalyEvent.timestamp.desc())
-                    .limit(20)
+                    .limit(500)
                 )
                 recent_anomalies = list(session.scalars(recent_stmt))
 
@@ -697,8 +760,10 @@ class ReportService:
             logger.exception("Failed to query anomaly events for report")
             raise exc
 
-    def collect_report_data(self, range_key: str = "24h") -> dict[str, Any]:
-        """Aggregate all diagnostic telemetry sections safely."""
+    def collect_report_data(
+        self, range_key: str = "24h", report_type: str = "all"
+    ) -> dict[str, Any]:
+        """Aggregate diagnostic telemetry sections safely for the requested report scope."""
         range_seconds = SUPPORTED_REPORT_RANGES.get(range_key, 24 * 3600)
         now = datetime.now(timezone.utc)
         start_time = now - timedelta(seconds=range_seconds)
@@ -706,34 +771,56 @@ class ReportService:
         sys_info = get_system_info()
         cpu_curr = get_cpu_info()
         mem_curr = get_memory_info()
-        disk_curr = get_disk_info()
-        net_curr = get_network_info()
-        hist_stats = self.collect_historical_aggregates(start_time)
-        timeseries_records = self.collect_historical_records(start_time)
+        disk_curr = get_disk_info() if report_type in ("all", "disk_network") else None
+        net_curr = get_network_info() if report_type in ("all", "disk_network") else None
+        hist_stats = self.collect_historical_aggregates(start_time, end_time=now)
+        timeseries_records = (
+            self.collect_historical_records(start_time, end_time=now)
+            if report_type in ("all", "cpu_memory", "disk_network", "process_resource")
+            else []
+        )
 
         # Process Monitoring (Security: only PID, Name, CPU, Mem, Status - NO CMDLINE / ENV)
-        proc_resp = get_processes(limit=100)
-        all_procs = getattr(proc_resp, "processes", [])
-        top_cpu = getattr(proc_resp, "top_cpu_processes", [])[:5]
-        if not top_cpu and all_procs:
-            top_cpu = sorted(all_procs, key=lambda p: (p.cpu_percent or 0.0), reverse=True)[:5]
-        top_mem = getattr(proc_resp, "top_ram_processes", [])[:5]
-        if not top_mem and all_procs:
-            top_mem = sorted(all_procs, key=lambda p: (p.memory_percent or 0.0), reverse=True)[:5]
+        top_cpu: list[Any] = []
+        top_mem: list[Any] = []
+        if report_type in ("all", "cpu_memory", "process_resource"):
+            proc_resp = get_processes(limit=100)
+            all_procs = getattr(proc_resp, "processes", [])
+            top_cpu = getattr(proc_resp, "top_cpu_processes", [])[:10]
+            if len(top_cpu) < 10 and all_procs:
+                top_cpu = sorted(all_procs, key=lambda p: (p.cpu_percent or 0.0), reverse=True)[:10]
+            top_mem = getattr(proc_resp, "top_ram_processes", [])[:10]
+            if len(top_mem) < 10 and all_procs:
+                top_mem = sorted(all_procs, key=lambda p: (p.memory_percent or 0.0), reverse=True)[:10]
 
         alert_counts, recent_alerts = self.collect_alerts_data(start_time)
-        gpu_curr = get_gpu_info()
-        battery_curr = get_battery_info()
-        temperature_curr = get_temperature_info()
+        alert_thresholds = cpu_alert_service.get_thresholds()
+        gpu_curr = get_gpu_info() if report_type == "all" else None
+        battery_curr = get_battery_info() if report_type == "all" else None
+        temperature_curr = get_temperature_info() if report_type == "all" else None
         anomaly_counts, anomaly_breakdown, recent_anomalies = self.collect_anomaly_data(start_time)
 
         # Predictions & Accuracy
-        try:
-            preds_15m = prediction_service.get_predictions(horizon="15m", auto_record=False)
-            preds_list = preds_15m.predictions
-        except Exception:
-            logger.debug("Prediction retrieval fallback for report")
-            preds_list = []
+        preds_list: list[Any] = []
+        preds_multi_horizon: list[Any] = []
+        if report_type in ("all", "cpu_memory", "disk_network", "prediction_accuracy"):
+            try:
+                preds_15m = prediction_service.get_predictions(horizon="15m", auto_record=False)
+                preds_list = preds_15m.predictions
+            except Exception:
+                logger.debug("Prediction retrieval fallback for report")
+                preds_list = []
+
+        if report_type == "prediction_accuracy":
+            for hz in ("5m", "10m", "15m", "30m"):
+                if hz == "15m" and preds_list:
+                    preds_multi_horizon.extend(preds_list)
+                    continue
+                try:
+                    resp_hz = prediction_service.get_predictions(horizon=hz, auto_record=False)
+                    preds_multi_horizon.extend(resp_hz.predictions)
+                except Exception:
+                    continue
 
         try:
             accuracy_data = prediction_service.get_accuracy(time_range=range_key)
@@ -756,6 +843,7 @@ class ReportService:
             "top_cpu_processes": top_cpu,
             "top_mem_processes": top_mem,
             "alert_counts": alert_counts,
+            "alert_thresholds": alert_thresholds,
             "recent_alerts": recent_alerts,
             "gpu": gpu_curr,
             "battery": battery_curr,
@@ -764,6 +852,7 @@ class ReportService:
             "anomaly_breakdown": anomaly_breakdown,
             "recent_anomalies": recent_anomalies,
             "predictions": preds_list,
+            "predictions_multi_horizon": preds_multi_horizon or preds_list,
             "accuracy": accuracy_data,
         }
 
@@ -806,7 +895,7 @@ class ReportService:
                 f"Supported types: {', '.join(SUPPORTED_REPORT_TYPES.keys())}"
             )
 
-        data = self.collect_report_data(range_key)
+        data = self.collect_report_data(range_key, report_type=report_type)
         now_str = data["generated_at"].strftime("%Y%m%d_%H%M%S")
         
         # Maintain clear filename adhering to testing patterns
@@ -903,10 +992,18 @@ class ReportService:
             period_text = RANGE_LABELS.get(range_key, range_key)
             gen_text = _format_dt(data["generated_at"])
             sys_obj = data["system"]
+            first_ts = data["historical_stats"].get("first_timestamp")
+            last_ts = data["historical_stats"].get("last_timestamp")
+            span_text = (
+                f"{_format_dt(first_ts)} to {_format_dt(last_ts)}"
+                if first_ts and last_ts
+                else f"{_format_dt(data['start_time'])} to {gen_text}"
+            )
             banner_sub = (
                 f"<b>Reporting Window:</b> {period_text} &nbsp;|&nbsp; "
                 f"<b>Generated:</b> {gen_text} &nbsp;|&nbsp; "
-                f"<b>Host:</b> {sys_obj.hostname} ({sys_obj.operating_system})"
+                f"<b>Host:</b> {sys_obj.hostname} ({sys_obj.operating_system})<br/>"
+                f"<b>Recorded History Span:</b> {span_text}"
             )
             story.append(Paragraph(banner_sub, subtitle_style))
             story.append(
@@ -998,10 +1095,17 @@ class ReportService:
             story.append(Paragraph(f"<font color='#64748b'><i>Summary Note: {health_desc}</i></font>", body_style))
             story.append(Spacer(1, 6))
 
+            section_num = 1
+            def _sec(title: str) -> Paragraph:
+                nonlocal section_num
+                p = Paragraph(f"{section_num}. {title}", h1_style)
+                section_num += 1
+                return p
+
             # ---------------------------------------------------------------
             # 1. System Information
             # ---------------------------------------------------------------
-            story.append(Paragraph("1. System Information", h1_style))
+            story.append(_sec("System Information"))
             sys_rows = [
                 [
                     Paragraph("<b>Operating System:</b>", body_style),
@@ -1047,7 +1151,7 @@ class ReportService:
             # 2. CPU Monitoring
             # ---------------------------------------------------------------
             if report_type in ["all", "cpu_memory"]:
-                story.append(Paragraph("2. CPU Monitoring & Utilization", h1_style))
+                story.append(_sec("CPU Monitoring & Utilization"))
                 cpu_curr = data["cpu"]
                 hist = data["historical_stats"]
                 cpu_rows = [
@@ -1093,7 +1197,7 @@ class ReportService:
             # 3. Memory Monitoring
             # ---------------------------------------------------------------
             if report_type in ["all", "cpu_memory"]:
-                story.append(Paragraph("3. Memory Monitoring & Allocation", h1_style))
+                story.append(_sec("Memory Monitoring & Allocation"))
                 mem = data["memory"]
                 hist = data["historical_stats"]
                 mem_rows = [
@@ -1141,7 +1245,7 @@ class ReportService:
             # 4. Disk Monitoring
             # ---------------------------------------------------------------
             if report_type in ["all", "disk_network"]:
-                story.append(Paragraph("4. Disk Storage & I/O Throughput", h1_style))
+                story.append(_sec("Disk Storage & I/O Throughput"))
                 disk_partitions = data["disk"].partitions or []
                 disk_rows = [
                     [
@@ -1201,7 +1305,7 @@ class ReportService:
             # 5. Network Monitoring
             # ---------------------------------------------------------------
             if report_type in ["all", "disk_network"]:
-                story.append(Paragraph("5. Network Interfaces & Throughput", h1_style))
+                story.append(_sec("Network Interfaces & Throughput"))
                 net = data["network"]
                 hist = data["historical_stats"]
                 net_rows = [
@@ -1252,7 +1356,7 @@ class ReportService:
             # 6. Process Monitoring (Strict Security: No CMDLINE / No ENV)
             # ---------------------------------------------------------------
             if report_type in ["all", "cpu_memory", "process_resource"]:
-                story.append(Paragraph("6. Process Monitoring (Top Resource Consumers)", h1_style))
+                story.append(_sec("Process Monitoring (Top Resource Consumers)"))
                 proc_rows = [
                     [
                         Paragraph("Category", th_style),
@@ -1264,7 +1368,7 @@ class ReportService:
                         Paragraph("Memory (MB)", th_style),
                     ]
                 ]
-                num_procs = 5 if report_type == "process_resource" else 3
+                num_procs = 10 if report_type == "process_resource" else 5
                 for p in data["top_cpu_processes"][:num_procs]:
                     mem_mb_str = f"{p.memory_mb:.1f}" if p.memory_mb is not None else "—"
                     proc_rows.append(
@@ -1309,13 +1413,94 @@ class ReportService:
                 story.append(t_proc)
                 story.append(Spacer(1, 6))
 
+                if report_type == "process_resource":
+                    story.append(_sec("Workload Overhead vs System Capacity"))
+                    story.append(
+                        chart_gen.chart_cpu_utilization(
+                            data["timeseries_records"], data["start_time"], data["generated_at"]
+                        )
+                    )
+                    story.append(Spacer(1, 4))
+                    story.append(
+                        chart_gen.chart_memory_utilization(
+                            data["timeseries_records"], data["start_time"], data["generated_at"]
+                        )
+                    )
+                    story.append(Spacer(1, 6))
+
             # ---------------------------------------------------------------
             # 7. Resource Alerts
             # ---------------------------------------------------------------
-            if report_type in ["all", "alerts_anomaly"]:
-                story.append(Paragraph("7. Resource Alerts & Threshold Breaches", h1_style))
-                ac = data["alert_counts"]
-                recent_alerts = data["recent_alerts"]
+            if report_type in ["all", "alerts_anomaly", "cpu_memory", "disk_network"]:
+                story.append(_sec("Resource Alerts & Threshold Breaches"))
+                domain_alert_filter = (
+                    {"cpu", "ram", "memory"}
+                    if report_type == "cpu_memory"
+                    else {"disk", "network"}
+                    if report_type == "disk_network"
+                    else None
+                )
+                if report_type == "alerts_anomaly" and data.get("alert_thresholds"):
+                    th_cfg = data["alert_thresholds"]
+                    thresh_rows = [
+                        [
+                            Paragraph("Resource", th_style),
+                            Paragraph("Warning Threshold", th_style),
+                            Paragraph("Critical Threshold", th_style),
+                        ],
+                        [
+                            Paragraph("CPU Utilization", bold_style),
+                            Paragraph(f"{th_cfg.cpu_warning_threshold_percent:g}%", body_style),
+                            Paragraph(f"{th_cfg.cpu_critical_threshold_percent:g}%", body_style),
+                        ],
+                        [
+                            Paragraph("RAM Utilization", bold_style),
+                            Paragraph(f"{th_cfg.ram_warning_threshold_percent:g}%", body_style),
+                            Paragraph(f"{th_cfg.ram_critical_threshold_percent:g}%", body_style),
+                        ],
+                        [
+                            Paragraph("Disk Utilization", bold_style),
+                            Paragraph(f"{th_cfg.disk_warning_threshold_percent:g}%", body_style),
+                            Paragraph(f"{th_cfg.disk_critical_threshold_percent:g}%", body_style),
+                        ],
+                        [
+                            Paragraph("Temperature", bold_style),
+                            Paragraph(f"{th_cfg.temperature_warning_threshold_celsius:g} °C", body_style),
+                            Paragraph(f"{th_cfg.temperature_critical_threshold_celsius:g} °C", body_style),
+                        ],
+                        [
+                            Paragraph("Battery (Discharging)", bold_style),
+                            Paragraph(f"{th_cfg.battery_warning_threshold_percent:g}%", body_style),
+                            Paragraph(f"{th_cfg.battery_critical_threshold_percent:g}%", body_style),
+                        ],
+                    ]
+                    t_thresh = Table(thresh_rows, colWidths=[180, 176, 176])
+                    t_thresh.setStyle(
+                        TableStyle(
+                            [
+                                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+                                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                                ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+                                ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                                ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                            ]
+                        )
+                    )
+                    story.append(t_thresh)
+                    story.append(Spacer(1, 5))
+
+                recent_alerts = [
+                    a for a in data["recent_alerts"]
+                    if domain_alert_filter is None or (a.resource or "").lower() in domain_alert_filter
+                ]
+                if domain_alert_filter is None:
+                    ac = data["alert_counts"]
+                else:
+                    ac = {
+                        "total": len(recent_alerts),
+                        "warning": sum(1 for a in recent_alerts if (a.severity or "").strip().lower() == "warning"),
+                        "critical": sum(1 for a in recent_alerts if (a.severity or "").strip().lower() == "critical"),
+                    }
                 alert_summary_text = (
                     f"<b>Alert Summary:</b> Total Events: <b>{ac['total']}</b> &nbsp;|&nbsp; "
                     f"Warnings: <font color='#b45309'><b>{ac['warning']}</b></font> &nbsp;|&nbsp; "
@@ -1332,8 +1517,10 @@ class ReportService:
                         Paragraph("Alert Message", th_style),
                     ]
                 ]
-                for a in recent_alerts[:5]:
-                    sev_color = "#b91c1c" if a.severity == "critical" else "#b45309"
+                max_alert_rows = 10 if report_type == "alerts_anomaly" else 5
+                for a in recent_alerts[:max_alert_rows]:
+                    sev_norm = (a.severity or "").strip().lower()
+                    sev_color = "#b91c1c" if sev_norm == "critical" else "#047857" if sev_norm == "normal" else "#b45309"
                     alert_rows.append(
                         [
                             Paragraph(_format_dt(a.timestamp), body_style),
@@ -1366,16 +1553,17 @@ class ReportService:
                 )
                 story.append(t_alerts)
                 story.append(Spacer(1, 4))
-                # Alert History Chart
-                alert_chart = chart_gen.chart_alert_history(ac, recent_alerts)
-                story.append(alert_chart)
+                if report_type in ["all", "alerts_anomaly"]:
+                    # Alert History Chart
+                    alert_chart = chart_gen.chart_alert_history(ac, recent_alerts)
+                    story.append(alert_chart)
                 story.append(Spacer(1, 6))
 
             # ---------------------------------------------------------------
             # 8. GPU Monitoring (Only in Complete report)
             # ---------------------------------------------------------------
             if report_type == "all":
-                story.append(Paragraph("8. GPU Hardware Telemetry", h1_style))
+                story.append(_sec("GPU Hardware Telemetry"))
                 gpu = data["gpu"]
                 if gpu.supported_gpu_detected and gpu.devices:
                     gpu_rows = [
@@ -1425,7 +1613,7 @@ class ReportService:
             # 9. Battery Monitoring (Only in Complete report)
             # ---------------------------------------------------------------
             if report_type == "all":
-                story.append(Paragraph("9. Battery & Power Telemetry", h1_style))
+                story.append(_sec("Battery & Power Telemetry"))
                 bat = data["battery"]
                 if bat.availability == "available":
                     plugged_text = "Yes (AC Connected)" if bat.power_plugged else "No (On Battery)"
@@ -1448,7 +1636,7 @@ class ReportService:
             # 10. Temperature Monitoring (Only in Complete report)
             # ---------------------------------------------------------------
             if report_type == "all":
-                story.append(Paragraph("10. Temperature Sensor Telemetry", h1_style))
+                story.append(_sec("Temperature Sensor Telemetry"))
                 temp = data["temperature"]
                 if temp.availability == "available" and temp.sensors:
                     temp_rows = [
@@ -1493,9 +1681,27 @@ class ReportService:
             # ---------------------------------------------------------------
             # 11. Anomaly Detection
             # ---------------------------------------------------------------
-            if report_type in ["all", "alerts_anomaly"]:
-                story.append(Paragraph("11. Anomaly Detection (Statistical Z-Score Analysis)", h1_style))
-                anc = data["anomaly_counts"]
+            if report_type in ["all", "alerts_anomaly", "cpu_memory", "disk_network"]:
+                story.append(_sec("Anomaly Detection (Statistical Z-Score Analysis)"))
+                domain_anom_filter = (
+                    {"cpu", "memory"}
+                    if report_type == "cpu_memory"
+                    else {"disk", "network"}
+                    if report_type == "disk_network"
+                    else None
+                )
+                bd = [
+                    row for row in data["anomaly_breakdown"]
+                    if domain_anom_filter is None or (row["resource"] or "").lower() in domain_anom_filter
+                ]
+                if domain_anom_filter is None:
+                    anc = data["anomaly_counts"]
+                else:
+                    anc = {
+                        "total": sum(r["total"] for r in bd),
+                        "warning": sum(r["warning"] for r in bd),
+                        "critical": sum(r["critical"] for r in bd),
+                    }
                 story.append(
                     Paragraph(
                         f"<b>Anomaly Summary:</b> Total Events: <b>{anc['total']}</b> &nbsp;|&nbsp; "
@@ -1505,7 +1711,6 @@ class ReportService:
                     )
                 )
                 story.append(Spacer(1, 3))
-                bd = data["anomaly_breakdown"]
                 if bd:
                     anom_rows = [
                         [
@@ -1545,22 +1750,38 @@ class ReportService:
                         )
                     )
                 story.append(Spacer(1, 4))
-                # Anomaly Charts: Frequency Timeline & Resource Distribution
-                anom_freq_chart = chart_gen.chart_anomaly_frequency(
-                    data["recent_anomalies"], data["start_time"], data["generated_at"]
-                )
-                story.append(anom_freq_chart)
-                story.append(Spacer(1, 4))
-                anom_dist_chart = chart_gen.chart_anomaly_distribution(bd)
-                story.append(anom_dist_chart)
+                if report_type in ["all", "alerts_anomaly"]:
+                    # Anomaly Charts: Frequency Timeline & Resource Distribution
+                    anom_freq_chart = chart_gen.chart_anomaly_frequency(
+                        data["recent_anomalies"], data["start_time"], data["generated_at"]
+                    )
+                    story.append(anom_freq_chart)
+                    story.append(Spacer(1, 4))
+                    anom_dist_chart = chart_gen.chart_anomaly_distribution(bd)
+                    story.append(anom_dist_chart)
                 story.append(Spacer(1, 6))
 
             # ---------------------------------------------------------------
             # 12. Resource Prediction
             # ---------------------------------------------------------------
-            if report_type in ["all", "prediction_accuracy"]:
-                story.append(Paragraph("12. Resource Utilization Prediction", h1_style))
-                preds = data["predictions"]
+            if report_type in ["all", "prediction_accuracy", "cpu_memory", "disk_network"]:
+                story.append(_sec("Resource Utilization Prediction"))
+                domain_pred_filter = (
+                    {"cpu", "memory"}
+                    if report_type == "cpu_memory"
+                    else {"disk", "network"}
+                    if report_type == "disk_network"
+                    else None
+                )
+                source_preds = (
+                    data.get("predictions_multi_horizon", data["predictions"])
+                    if report_type == "prediction_accuracy"
+                    else data["predictions"]
+                )
+                preds = [
+                    p for p in source_preds
+                    if domain_pred_filter is None or (p.resource or "").lower() in domain_pred_filter
+                ]
                 if preds:
                     pred_rows = [
                         [
@@ -1610,16 +1831,21 @@ class ReportService:
                         )
                     )
                 story.append(Spacer(1, 4))
-                # Actual vs Predicted Chart
-                pred_chart = chart_gen.chart_actual_vs_predicted(preds)
-                story.append(pred_chart)
+                if report_type in ["all", "prediction_accuracy", "cpu_memory"]:
+                    # Actual vs Predicted Chart (uses 15m percent forecasts for clean readability)
+                    chart_preds = [
+                        p for p in data["predictions"]
+                        if domain_pred_filter is None or (p.resource or "").lower() in domain_pred_filter
+                    ]
+                    pred_chart = chart_gen.chart_actual_vs_predicted(chart_preds)
+                    story.append(pred_chart)
                 story.append(Spacer(1, 6))
 
             # ---------------------------------------------------------------
             # 13. Prediction Accuracy
             # ---------------------------------------------------------------
             if report_type in ["all", "prediction_accuracy"]:
-                story.append(Paragraph("13. Prediction Accuracy & Validation Metrics", h1_style))
+                story.append(_sec("Prediction Accuracy & Validation Metrics"))
                 acc = data["accuracy"]
                 if acc and acc.overall and acc.overall.evaluated_count > 0:
                     ov = acc.overall

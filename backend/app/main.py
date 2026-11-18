@@ -140,6 +140,7 @@ app.add_middleware(
     allow_origins=list(settings.cors_allowed_origins),
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 app.include_router(system_router)
 app.include_router(gpu_router)
